@@ -17,11 +17,23 @@ ledger.anchor(record) works identically for both.
 """
 
 from __future__ import annotations
-
+import os
 import hashlib
 import json
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
+from dotenv import load_dotenv
+from web3 import Web3
+from eth_account import Account
+
+ROOT = Path(__file__).resolve().parents[3]
+load_dotenv(ROOT / ".env")
+
+def generate_signature(root_hash: str, verifier_key: str = "demo-verifier-key") -> str:
+    """Stand-in HMAC-style signature. Replace with a real keypair (eth_account
+    or similar) before a real deployment — the anchor schema doesn't change."""
+    return hashlib.sha256((verifier_key + root_hash).encode()).hexdigest()[:32]
 
 
 @dataclass
@@ -32,24 +44,29 @@ class MockLedger:
     chain: list[dict[str, str]] = field(default_factory=list)
 
     def anchor(self, record_id:str, root_hash:str, verifier_signature:str) -> dict:
-        prev_block_hash = self.chain[-1]["block_hash"] if self.chain else "0" * 64
-        entry = {
+        prev = self.chain[-1]["block_hash"] if self.chain else "0" * 64
+        block = {
             "proof_id": record_id,
             "root_hash": root_hash,
             "timestamp": time.time(),
             "verifier_signature": verifier_signature,
-            "prev_block_hash": prev_block_hash,
+            "prev_block_hash": prev,
         }
-        block_blob = json.dumps(entry, sort_keys=True, default=str)
-        entry["block_hash"] = hashlib.sha256(block_blob.encode()).hexdigest()
-        self.chain.append(entry)
-        return entry
+        blob = json.dumps(block, sort_keys=True, default=str)
+
+        block["block_hash"] = hashlib.sha256(blob.encode()).hexdigest()
+
+        self.chain.append(block)
+
+        return block
 
     def verify(self, record_id: str, root_hash: str) -> bool:
-        for entry in self.chain:
-            if entry["proof_id"] == record_id:
-                return entry["root_hash"] == root_hash
-        return False
+        entry = self.get(record_id)
+
+        if entry is None:
+            return False
+
+        return entry["root_hash"] == root_hash
 
     def get(self, record_id: str):
 
@@ -59,50 +76,146 @@ class MockLedger:
 
         return None
 
-    def is_chain_intact(self) -> bool:
+    def is_chain_intact(self)-> bool:
         """Re-walks the local chain to confirm no block was edited after the fact."""
         prev = "0" * 64
         for entry in self.chain:
+
             check = dict(entry)
-            stored_hash = check.pop("block_hash")
+
+            stored = check.pop("block_hash")
+
             blob = json.dumps(check, sort_keys=True, default=str)
-            if check["prev_block_hash"] != prev:
+
+            if check["prev_block_hash"] != previous:
                 return False
-            if hashlib.sha256(blob.encode()).hexdigest() != stored_hash:
+
+            if hashlib.sha256(blob.encode()).hexdigest() != stored:
                 return False
-            prev = stored_hash
+
+            previous = stored
+
         return True
 
+class Web3Ledger:
 
-def generate_signature(root_hash: str, verifier_key: str = "demo-verifier-key") -> str:
-    """Stand-in HMAC-style signature. Replace with a real keypair (eth_account
-    or similar) before a real deployment — the anchor schema doesn't change."""
-    return hashlib.sha256((verifier_key + root_hash).encode()).hexdigest()[:32]
+    def __init__(self):
 
-ledger = MockLedger()  # swap for Web3Ledger once you have a funded wallet + RPC URL
+        self.rpc = os.getenv("SEPOLIA_RPC_URL")
+        self.private_key = os.getenv("PRIVATE_KEY")
+        self.contract_address = os.getenv("CONTRACT_ADDRESS")
+
+        if not self.rpc:
+            raise RuntimeError("Missing SEPOLIA_RPC_URL")
+
+        if not self.private_key:
+            raise RuntimeError("Missing PRIVATE_KEY")
+
+        if not self.contract_address:
+            raise RuntimeError("Missing CONTRACT_ADDRESS")
+
+        self.w3 = Web3(Web3.HTTPProvider(self.rpc))
+
+        if not self.w3.is_connected():
+            raise RuntimeError("Could not connect to Sepolia")
+
+        self.account = Account.from_key(self.private_key)
+
+        artifact_path = (
+            ROOT
+            / "contracts"
+            / "artifacts"
+            / "contracts"
+            / "ProofRegistry.sol"
+            / "VeritasProofAnchor.json"
+        )
+
+        with open(artifact_path, "r", encoding="utf-8",) as f:
+            artifact = json.load(f)
+
+        abi = artifact["abi"]
+
+        self.contract = self.w3.eth.contract(
+            address=Web3.to_checksum_address(self.contract_address),
+            abi=abi,
+        )
+
+        print("Connected to Sepolia")
+        print(self.account.address)
+
+    def anchor(self, record_id: str, root_hash: str, verifier_signature: str,) -> dict:
+
+        nonce = self.w3.eth.get_transaction_count(
+            self.account.address
+        )
+
+        tx = self.contract.functions.storeProof(
+            record_id,
+            Web3.keccak(text=root_hash),
+            verifier_signature.encode(),
+        ).build_transaction(
+            {
+                "from": self.account.address,
+                "nonce": nonce,
+                "gas": 300000,
+                "gasPrice": self.w3.eth.gas_price,
+                "chainId": self.w3.eth.chain_id,
+            }
+        )
+
+        signed = self.account.sign_transaction(tx)
+
+        tx_hash = self.w3.eth.send_raw_transaction(
+            signed.raw_transaction
+        )
+
+        receipt = self.w3.eth.wait_for_transaction_receipt(tx_hash)
+
+        return {
+            "tx_hash": tx_hash.hex(),
+            "block_number": receipt.blockNumber,
+            "transaction_hash": tx_hash.hex(),
+        }
+
+    def verify(self, record_id: str, root_hash: str,) -> bool:
+
+        return self.contract.functions.verifyProof(
+            record_id,
+            Web3.keccak(text=root_hash),
+        ).call()
+
+    def get(self, record_id: str):
+
+        exists = self.contract.functions.proofExists(
+            record_id
+        ).call()
+
+        if not exists:
+            return None
+
+        root_hash, timestamp, signature, submitter = (
+            self.contract.functions.getProof(
+                record_id
+            ).call()
+        )
+
+        return {
+            "proof_id": record_id,
+            "root_hash": root_hash.hex(),
+            "timestamp": timestamp,
+            "verifier_signature": signature.hex(),
+            "submitter": submitter,
+        }
 
 
-# ---------------------------------------------------------------------------
-# Real deployment sketch (uncomment + fill in once you have a funded wallet):
-#
-# from web3 import Web3
-#
-# class Web3Ledger:
-#     def __init__(self, rpc_url: str, contract_address: str, abi: list, private_key: str):
-#         self.w3 = Web3(Web3.HTTPProvider(rpc_url))
-#         self.contract = self.w3.eth.contract(address=contract_address, abi=abi)
-#         self.account = self.w3.eth.account.from_key(private_key)
-#
-#     def anchor(self, record_id: str, root_hash: str, verifier_signature: str) -> dict:
-#         tx = self.contract.functions.storeProof(
-#             record_id, bytes.fromhex(root_hash), verifier_signature
-#         ).build_transaction({
-#             "from": self.account.address,
-#             "nonce": self.w3.eth.get_transaction_count(self.account.address),
-#             "gas": 200000,
-#         })
-#         signed = self.account.sign_transaction(tx)
-#         tx_hash = self.w3.eth.send_raw_transaction(signed.rawTransaction)
-#         receipt = self.w3.eth.wait_for_transaction_receipt(tx_hash)
-#         return {"tx_hash": tx_hash.hex(), "block_number": receipt.blockNumber}
-# ---------------------------------------------------------------------------
+# -------------------------------------------------------
+# Choose backend
+# -------------------------------------------------------
+
+USE_WEB3 = True
+
+if USE_WEB3:
+    ledger = Web3Ledger()
+else:
+    ledger = MockLedger()
+

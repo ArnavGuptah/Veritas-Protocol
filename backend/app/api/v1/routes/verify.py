@@ -24,7 +24,7 @@ def verify(record_id: str):
             detail="Ledger entry not found"
         )
 
-    chain_valid = proof.root_hash == anchor["root_hash"]
+    chain_valid = (proof.root_hash == anchor["root_hash"].lower())
 
     return {
         "record_id": record_id,
