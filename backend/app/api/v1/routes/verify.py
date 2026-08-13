@@ -16,22 +16,15 @@ def verify(record_id: str):
             detail="Record not found"
         )
 
+    chain_valid = ledger.verify(record_id, proof.root_hash)
+
     anchor = ledger.get(record_id)
-
-    if anchor is None:
-        raise HTTPException(
-            status_code=404,
-            detail="Ledger entry not found"
-        )
-
-    chain_valid = (proof.root_hash == anchor["root_hash"].lower())
 
     return {
         "record_id": record_id,
         "question": proof.question,
         "root_hash": proof.root_hash,
-        "ledger_root_hash": anchor["root_hash"],
-        "chain_valid": chain_valid,
-        "anchored": True,
-        "timestamp": anchor["timestamp"],
+        "verified_on_chain": chain_valid,
+        "block_timestamp": anchor["timestamp"],
+        "submitter": anchor["submitter"],
     }

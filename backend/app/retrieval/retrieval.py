@@ -77,30 +77,74 @@ class Retriever:
             self._tfidf.fit_transform(self._raw_texts) if self._raw_texts else None
         )
 
-    def search(self, query: str, top_k: int = 5, bm25_weight: float = 0.5) -> list[EvidenceChunk]:
+    def search(self, query: str, top_k: int = 5, bm25_weight: float = 0.12, min_fused_score: float = 0.12,) -> list[EvidenceChunk]:
         if not self.chunks:
             return []
 
+        query_tokens = set(_tokenize(query))
+
         bm25_scores = self._bm25.get_scores(_tokenize(query))
-        max_bm25 = max(bm25_scores) or 1.0
+
+        max_bm25 = max(bm25_scores) if len(bm25_scores) else 0.0
+
+        if max_bm25 <= 0:
+            bm25_norm_scores = [0.0] * len(bm25_scores)
+            
+        else:
+            bm25_norm_scores = [
+                float(score) / max_bm25
+                for score in bm25_scores
+            ]
 
         query_vec = self._tfidf.transform([query])
-        sim_scores = cosine_similarity(query_vec, self._tfidf_matrix)[0]
+        sim_scores = cosine_similarity(
+            query_vec,
+            self._tfidf_matrix
+        )[0]
 
-        scored: list[EvidenceChunk] = []
+        scored = []
+
         for i, chunk in enumerate(self.chunks):
-            bm25_norm = bm25_scores[i] / max_bm25
-            sim = float(sim_scores[i])
-            fused = bm25_weight * bm25_norm + (1 - bm25_weight) * sim
+
+            chunk_tokens = set(_tokenize(chunk.text))
+
+            lexical_overlap = (
+                len(query_tokens & chunk_tokens)
+                / max(len(query_tokens), 1)
+            )
+
+            bm25_norm = bm25_norm_scores[i]
+            semantic_similarity = float(sim_scores[i])
+
+            fused = (
+                bm25_weight * bm25_norm
+                + (1 - bm25_weight) * semantic_similarity
+            )
+
+            # Hard relevance protection.
+            #
+            # A document with essentially no lexical or semantic
+            # relationship to the query must not enter the evidence set.
+            if fused < min_fused_score:
+                continue
+
+            # Prevent completely unrelated lexical matches.
+            if lexical_overlap == 0 and semantic_similarity < 0.15:
+                continue
+
             scored.append(
                 chunk.model_copy(
                     update={
-                        "similarity": round(sim, 4),
+                        "similarity": round(semantic_similarity, 4),
                         "bm25_score": round(float(bm25_scores[i]), 4),
                         "fused_score": round(float(fused), 4),
                     }
                 )
             )
 
-        scored.sort(key=lambda c: c.fused_score, reverse=True)
+        scored.sort(
+            key=lambda c: c.fused_score,
+            reverse=True,
+        )
+
         return scored[:top_k]

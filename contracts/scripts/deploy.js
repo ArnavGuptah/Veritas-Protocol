@@ -1,10 +1,6 @@
 const hre = require("hardhat");
 
 async function main() {
-    
-    const hre = require("hardhat");
-
-async function main() {
     const VeritasProofAnchor = await hre.ethers.getContractFactory("VeritasProofAnchor");
 
     const contract = await VeritasProofAnchor.deploy();
@@ -19,12 +15,5 @@ async function main() {
 
 main().catch((err) => {
     console.error(err);
-    process.exitCode = 1;
-});
-    
-}
-
-main().catch((error) => {
-    console.error(error);
     process.exitCode = 1;
 });

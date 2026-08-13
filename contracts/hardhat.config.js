@@ -1,9 +1,10 @@
 require("@nomicfoundation/hardhat-toolbox");
 
 require("dotenv").config({
-  path: "../.env"
+  path: "../backend/.env" ,
 });
 
+console.log(process.cwd());
 console.log("RPC =", process.env.SEPOLIA_RPC_URL);
 console.log("KEY =", process.env.PRIVATE_KEY?.slice(0, 10));
 

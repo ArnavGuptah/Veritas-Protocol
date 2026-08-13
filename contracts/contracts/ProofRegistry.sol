@@ -3,16 +3,7 @@ pragma solidity ^0.8.20;
 
 /// @title Veritas Proof Anchor
 /// @author Veritas Protocol
-/// @notice Stores ONLY proof metadata on-chain.
-/// @dev
-/// The blockchain is used only to prove integrity and provenance.
-/// AI reasoning, retrieved evidence, embeddings, documents, and Proof Objects
-/// remain completely off-chain.
-///
-/// Recommended deployment:
-/// - Polygon Amoy Testnet
-/// - Base Sepolia Testnet
-
+/// @notice Stores proof metadata on-chain only.
 contract VeritasProofAnchor {
 
     // ------------------------------------------------------------------------
@@ -21,20 +12,6 @@ contract VeritasProofAnchor {
 
     error ProofAlreadyExists(string proofId);
     error ProofNotFound(string proofId);
-
-    // ------------------------------------------------------------------------
-    // Data Model
-    // ------------------------------------------------------------------------
-
-    struct ProofRecord {
-        bytes32 rootHash;          // Final Proof Object hash
-        uint256 timestamp;         // Block timestamp
-        bytes verifierSignature;   // Cryptographic verifier signature
-        address submitter;         // Wallet that anchored the proof
-    }
-
-    mapping(string => ProofRecord) private proofs;
-    string[] private proofIds;
 
     // ------------------------------------------------------------------------
     // Events
@@ -48,7 +25,22 @@ contract VeritasProofAnchor {
     );
 
     // ------------------------------------------------------------------------
-    // Write Functions
+    // Data Model
+    // ------------------------------------------------------------------------
+
+    struct ProofRecord {
+        bytes32 rootHash;
+        uint256 timestamp;
+        bytes verifierSignature;
+        address submitter;
+    }
+
+    mapping(string => ProofRecord) private proofs;
+
+    uint256 public totalProofs;
+
+    // ------------------------------------------------------------------------
+    // Store Proof
     // ------------------------------------------------------------------------
 
     function storeProof(
@@ -68,7 +60,7 @@ contract VeritasProofAnchor {
             submitter: msg.sender
         });
 
-        proofIds.push(proofId);
+        totalProofs++;
 
         emit ProofAnchored(
             proofId,
@@ -79,19 +71,37 @@ contract VeritasProofAnchor {
     }
 
     // ------------------------------------------------------------------------
-    // Read Functions
+    // Verify
     // ------------------------------------------------------------------------
 
     function verifyProof(
         string calldata proofId,
         bytes32 claimedRootHash
-    )
-        external
-        view
-        returns (bool)
-    {
-        return proofs[proofId].rootHash == claimedRootHash;
+    ) external view returns (bool) {
+
+        ProofRecord storage proof = proofs[proofId];
+
+        if (proof.timestamp == 0) {
+            return false;
+        }
+
+        return proof.rootHash == claimedRootHash;
     }
+
+    // ------------------------------------------------------------------------
+    // Exists
+    // ------------------------------------------------------------------------
+
+    function proofExists(
+        string calldata proofId
+    ) external view returns (bool) {
+
+        return proofs[proofId].timestamp != 0;
+    }
+
+    // ------------------------------------------------------------------------
+    // Read
+    // ------------------------------------------------------------------------
 
     function getProof(
         string calldata proofId
@@ -117,23 +127,5 @@ contract VeritasProofAnchor {
             proof.verifierSignature,
             proof.submitter
         );
-    }
-
-    function totalProofs()
-        external
-        view
-        returns (uint256)
-    {
-        return proofIds.length;
-    }
-
-    function proofExists(
-        string calldata proofId
-    )
-        external
-        view
-        returns (bool)
-    {
-        return proofs[proofId].timestamp != 0;
     }
 }

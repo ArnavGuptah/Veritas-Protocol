@@ -27,8 +27,11 @@ from dotenv import load_dotenv
 from web3 import Web3
 from eth_account import Account
 
-ROOT = Path(__file__).resolve().parents[3]
-load_dotenv(ROOT / ".env")
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
+load_dotenv(PROJECT_ROOT / "backend" / ".env")
+
+print("Loaded RPC:", os.getenv("SEPOLIA_RPC_URL"))
+print("Loaded Contract:", os.getenv("CONTRACT_ADDRESS"))
 
 def generate_signature(root_hash: str, verifier_key: str = "demo-verifier-key") -> str:
     """Stand-in HMAC-style signature. Replace with a real keypair (eth_account
@@ -122,13 +125,16 @@ class Web3Ledger:
         self.account = Account.from_key(self.private_key)
 
         artifact_path = (
-            ROOT
+            PROJECT_ROOT
             / "contracts"
             / "artifacts"
             / "contracts"
             / "ProofRegistry.sol"
             / "VeritasProofAnchor.json"
         )
+
+        print("Artifact:", artifact_path)
+        print("Exists:", artifact_path.exists())
 
         with open(artifact_path, "r", encoding="utf-8",) as f:
             artifact = json.load(f)
@@ -140,13 +146,16 @@ class Web3Ledger:
             abi=abi,
         )
 
-        print("Connected to Sepolia")
-        print(self.account.address)
-
     def anchor(self, record_id: str, root_hash: str, verifier_signature: str,) -> dict:
 
+        print("========== BLOCKCHAIN ANCHOR ==========")
+        print("Proof ID:", record_id)
+        print("Root hash:", root_hash)
+        print("Submitting to contract:", self.contract_address)
+
         nonce = self.w3.eth.get_transaction_count(
-            self.account.address
+            self.account.address,
+            "pending"
         )
 
         tx = self.contract.functions.storeProof(
@@ -169,20 +178,55 @@ class Web3Ledger:
             signed.raw_transaction
         )
 
+        print("Transaction submitted:", tx_hash.hex())
+
         receipt = self.w3.eth.wait_for_transaction_receipt(tx_hash)
 
+        if receipt.status != 1:
+            raise RuntimeError(
+                f"Blockchain transaction failed: {tx_hash.hex()}"
+            )
+
+        print("Transaction confirmed.")
+        print("Block:", receipt.blockNumber)
+        print("========================================")
+
         return {
+            "status": "anchored",
             "tx_hash": tx_hash.hex(),
-            "block_number": receipt.blockNumber,
             "transaction_hash": tx_hash.hex(),
+            "block_number": receipt.blockNumber
         }
 
     def verify(self, record_id: str, root_hash: str,) -> bool:
 
-        return self.contract.functions.verifyProof(
+        expected = Web3.keccak(text=root_hash)
+
+        exists = self.contract.functions.proofExists(record_id).call()
+
+        if not exists:
+            print("========== VERIFY ==========")
+            print("Exists:", False)
+            print("============================")
+            return False
+
+        stored = self.contract.functions.getProof(record_id).call()[0]
+
+        result = self.contract.functions.verifyProof(
             record_id,
-            Web3.keccak(text=root_hash),
+            expected,
         ).call()
+
+        print("\n=======VERIFY=======")
+        print("Exists   :", exists)
+        print("Input    :", root_hash)
+        print("Expected :", expected.hex())
+        print("Stored   :", stored.hex())
+        print("Equal    :", expected == stored)
+        print("Contract :", result)
+        print("====================\n")
+
+        return result
 
     def get(self, record_id: str):
 
