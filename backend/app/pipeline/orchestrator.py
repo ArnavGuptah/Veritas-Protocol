@@ -14,10 +14,12 @@ from __future__ import annotations
 import hashlib
 import json
 import time
-from app.models.proof_object import ConfidenceLevel, StageRecord, Verdict, VerifiableReasoningRecord
-from app.pipeline.agents import run_consensus, run_critic, run_fact_checker, run_generator
+import uuid
+from app.models.proof_object import ConfidenceLevel, StageRecord, Verdict, VerifiableReasoningRecord, Challenge
+from app.pipeline.agents import check_question_coverage, run_consensus, run_critic, run_fact_checker, run_generator
 from app.retrieval.retrieval import Retriever
 from app.nlp.query_analyzer import analyze_query
+from app.verification.relevance import semantic_similarity
 
 
 def _hash(prev: str, payload) -> str:
@@ -40,11 +42,29 @@ def run_pipeline(question: str, retriever: Retriever,) -> VerifiableReasoningRec
     t0 = time.time()
     retrieved_evidence = retriever.search(analysis.normalized, top_k=5)
 
-    relevant_evidence = [
-        e 
-        for e in retrieved_evidence
-        if e.fused_score >= 0.25
-    ]
+    relevant_evidence = []
+
+    for e in retrieved_evidence:
+
+        semantic_score = semantic_similarity(
+            question,
+            e.text,
+        )
+
+        admitted = (
+            e.fused_score >= 0.25
+            or semantic_score >= 0.45
+        )
+
+        print(
+            f"[EVIDENCE ADMISSION] {e.chunk_id} "
+            f"| fused={e.fused_score:.3f} "
+            f"| semantic={semantic_score:.3f} "
+            f"| admitted={admitted}"
+        )
+
+        if admitted:
+            relevant_evidence.append(e)
 
     print("\n========== DEBUG EVIDENCE ==========")
 
@@ -167,25 +187,127 @@ def run_pipeline(question: str, retriever: Retriever,) -> VerifiableReasoningRec
     print("========================================\n")
 
     payload = {"fact_checks": [f.model_dump() for f in fact_checks]}
+
     new_h = _hash(h, payload)
-    stages.append(StageRecord(stage="fact_check", started_at=t0, finished_at=time.time(),
-                               payload=payload, input_hash=h, output_hash=new_h))
+
+    stages.append(
+        StageRecord(
+            stage="fact_check", 
+            started_at=t0, 
+            finished_at=time.time(),
+            payload=payload, 
+            input_hash=h, 
+            output_hash=new_h
+        )
+    )
+
     h = new_h
 
     # --- Stage 5: Consensus -------------------------------------------------
+
     t0 = time.time()
-    score, verdict_str, rationale = run_consensus(challenges, fact_checks, relevant_evidence)
+
+    question_covered, question_coverage_score, question_coverage_rationale = (
+        check_question_coverage(
+            question,
+            fact_checks,
+        )
+    )
+
+    if not question_covered:
+        challenges.append(
+            Challenge(
+                challenge_id=str(uuid.uuid4())[:8],
+                target_claim=answer[:120],
+                objection=question_coverage_rationale,
+                severity=0.85,
+                resolved=False,
+            )
+        )
+
+    print("\n========== QUESTION COVERAGE ==========")
+    print(
+        "Covered:",
+        question_covered,
+    )
+    print(
+        "Score:",
+        round(question_coverage_score, 4),
+    )
+    print(
+        "Rationale:",
+        question_coverage_rationale,
+    )
+    print("=======================================\n")
+
+    payload = {
+        "question_coverage": {
+            "covered": question_covered,
+            "score": question_coverage_score,
+            "rationale": question_coverage_rationale,
+        },
+        "challenges": [
+            c.model_dump()
+            for c in challenges
+        ],
+    }
+
+    new_h = _hash(h, payload)
+
+    stages.append(
+        StageRecord(
+            stage="question_coverage",
+            started_at=t0,
+            finished_at=time.time(),
+            payload=payload,
+            input_hash=h,
+            output_hash=new_h,
+        )
+    )
+
+    h = new_h
+
+#----------------Stage 6: Consensus -----------------------------
+
+    t0 = time.time()
+
+    score, verdict_str, rationale = run_consensus(
+        challenges,
+        fact_checks,
+        relevant_evidence,
+        answer_aligned=question_covered
+    )
+
     verdict = Verdict(
         verdict=verdict_str,
         confidence_score=score,
         confidence_level=ConfidenceLevel.from_score(score),
         rationale=rationale,
     )
-    payload = {"verdict": verdict.model_dump()}
-    new_h = _hash(h, payload)
-    stages.append(StageRecord(stage="consensus", started_at=t0, finished_at=time.time(),
-                               payload=payload, input_hash=h, output_hash=new_h))
+
+    payload = {
+        "verdict": verdict.model_dump(),
+    }
+
+    new_h = _hash(
+        h,
+        payload,
+    )
+
+    stages.append(
+        StageRecord(
+            stage="consensus",
+            started_at=t0,
+            finished_at=time.time(),
+            payload=payload,
+            input_hash=h,
+            output_hash=new_h,
+        )
+    )
+
     h = new_h
+
+    # ---------------- Final Proof Record ----------------------------
 
     record = VerifiableReasoningRecord(
         question=question,
@@ -197,4 +319,5 @@ def run_pipeline(question: str, retriever: Retriever,) -> VerifiableReasoningRec
         stages=stages,
         root_hash=h,
     )
+
     return record

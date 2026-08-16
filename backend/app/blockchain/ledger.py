@@ -178,24 +178,16 @@ class Web3Ledger:
             signed.raw_transaction
         )
 
-        print("Transaction submitted:", tx_hash.hex())
+        tx_hex = tx_hash.hex()
 
-        receipt = self.w3.eth.wait_for_transaction_receipt(tx_hash)
-
-        if receipt.status != 1:
-            raise RuntimeError(
-                f"Blockchain transaction failed: {tx_hash.hex()}"
-            )
-
-        print("Transaction confirmed.")
-        print("Block:", receipt.blockNumber)
+        print("Transaction submitted:", tx_hex)
         print("========================================")
 
         return {
-            "status": "anchored",
-            "tx_hash": tx_hash.hex(),
-            "transaction_hash": tx_hash.hex(),
-            "block_number": receipt.blockNumber
+            "status": "submitted",
+            "tx_hash": tx_hex,
+            "transaction_hash": tx_hex,
+            "block_number": None,
         }
 
     def verify(self, record_id: str, root_hash: str,) -> bool:

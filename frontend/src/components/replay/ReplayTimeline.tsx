@@ -1,60 +1,48 @@
 import GlassCard from "../common/GlassCard";
 
-const steps=[
+interface Stage {
+  stage: string;
+  started_at: number;
+  finished_at: number;
+}
 
-"Query",
+interface Props {
+  stages: Stage[];
+}
 
-"Retrieve",
+export default function ReplayTimeline({ stages }: Props) {
+  return (
+    <GlassCard>
+      <h3 className="text-2xl font-semibold">
+        Proof Replay
+      </h3>
 
-"Embedding",
+      <div className="mt-8 space-y-5">
+        {stages.map((stage, index) => (
+          <div
+            key={`${stage.stage}-${index}`}
+            className="flex items-center gap-4"
+          >
+            <div className="h-3 w-3 rounded-full bg-cyan-400" />
 
-"Graph",
+            <div className="flex-1">
+              <p className="capitalize text-zinc-200">
+                {stage.stage.replace("_", " ")}
+              </p>
 
-"Verification",
+              <p className="text-xs text-zinc-500">
+                {(
+                  stage.finished_at - stage.started_at
+                ).toFixed(3)}s
+              </p>
+            </div>
 
-"Blockchain"
-
-];
-
-export default function ReplayTimeline(){
-
-return(
-
-<GlassCard>
-
-<h3 className="text-2xl font-semibold">
-
-Pipeline Replay
-
-</h3>
-
-<div className="mt-8 space-y-6">
-
-{steps.map(step=>(
-
-<div
-key={step}
-className="flex items-center gap-5"
->
-
-<div
-className="h-4 w-4 rounded-full bg-cyan-400"
-/>
-
-<div>
-
-{step}
-
-</div>
-
-</div>
-
-))}
-
-</div>
-
-</GlassCard>
-
-)
-
+            <span className="text-xs text-green-400">
+              ✓
+            </span>
+          </div>
+        ))}
+      </div>
+    </GlassCard>
+  );
 }

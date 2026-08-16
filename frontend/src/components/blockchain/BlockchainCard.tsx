@@ -1,71 +1,104 @@
 import GlassCard from "../common/GlassCard";
+import type { VerificationResponse } from "../../api/query";
 
-export default function BlockchainCard(){
+interface Props {
+  verification: VerificationResponse;
+  rootHash: string;
+}
 
-return(
+export default function BlockchainCard({
+  verification,
+  rootHash,
+}: Props) {
+  const blockchain = verification.blockchain;
 
-<GlassCard>
+  return (
+    <GlassCard>
+      <h3 className="text-2xl font-semibold">
+        Proof Verification
+      </h3>
 
-<h3 className="text-2xl font-semibold">
+      <div className="mt-8 space-y-5">
 
-Blockchain
+        <div>
+          <p className="text-zinc-500">
+            Local proof
+          </p>
 
-</h3>
+          <p className="text-green-400">
+            {verification.local_proof.valid
+              ? "Valid ✓"
+              : "Tampered ✕"}
+          </p>
+        </div>
 
-<div className="mt-8 space-y-5">
+        <div>
+          <p className="text-zinc-500">
+            Blockchain
+          </p>
 
-<div>
+          <p
+            className={
+              blockchain.verified
+                ? "text-green-400"
+                : blockchain.status === "pending"
+                ? "text-yellow-400"
+                : "text-zinc-400"
+            }
+          >
+            {blockchain.verified
+              ? "Confirmed ✓"
+              : blockchain.status === "pending"
+              ? "Pending"
+              : "Not anchored"}
+          </p>
+        </div>
 
-<p className="text-zinc-500">
+        <div>
+          <p className="text-zinc-500">
+            Network
+          </p>
 
-Status
+          <p>
+            Ethereum Sepolia
+          </p>
+        </div>
 
-</p>
+        <div>
+          <p className="text-zinc-500">
+            Root hash
+          </p>
 
-<p className="text-green-400">
+          <p className="break-all text-xs text-zinc-300">
+            {rootHash}
+          </p>
+        </div>
 
-Verified ✓
+        {blockchain.tx_hash && (
+          <div>
+            <p className="text-zinc-500">
+              Transaction
+            </p>
 
-</p>
+            <p className="break-all text-xs text-cyan-400">
+              {blockchain.tx_hash}
+            </p>
+          </div>
+        )}
 
-</div>
+        {blockchain.record && (
+          <div>
+            <p className="text-zinc-500">
+              Block
+            </p>
 
-<div>
+            <p className="text-zinc-200">
+              On-chain proof confirmed
+            </p>
+          </div>
+        )}
 
-<p className="text-zinc-500">
-
-Network
-
-</p>
-
-<p>
-
-Ethereum Sepolia
-
-</p>
-
-</div>
-
-<div>
-
-<p className="text-zinc-500">
-
-Transaction
-
-</p>
-
-<p className="break-all text-cyan-400">
-
-0xf5dfb219565abca2d75123896cd809...
-
-</p>
-
-</div>
-
-</div>
-
-</GlassCard>
-
-)
-
+      </div>
+    </GlassCard>
+  );
 }

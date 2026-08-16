@@ -1,5 +1,5 @@
 from fastapi import APIRouter
-from app.api.v1.routes import query, verify, replay, graph
+from app.api.v1.routes import query, verify, replay, graph, records
 
 api_router = APIRouter()
 
@@ -21,4 +21,9 @@ api_router.include_router(
 api_router.include_router(
     graph.router,
     tags=["Graph"],
+)
+
+api_router.include_router(
+    records.router,
+    tags=["Records"],
 )

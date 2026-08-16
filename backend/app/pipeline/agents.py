@@ -13,6 +13,7 @@ from app.models.proof_object import Challenge, EvidenceChunk, FactCheckResult
 from app.pipeline.llm_adapter import call_llm
 from app.pipeline.claims import extract_claims
 from app.verification.nli import check_entailment
+from app.verification.relevance import semantic_similarity
 
 
 GENERATOR_SYSTEM = """You are the Generator agent in a verification pipeline.
@@ -140,7 +141,15 @@ def run_critic(question: str, answer: str, evidence: list[EvidenceChunk]) -> lis
             )
         )
 
-    low_conf_chunks = [e for e in evidence if e.fused_score < 0.25]
+    low_conf_chunks = [
+        e 
+        for e in evidence 
+        if (
+            e.fused_score < 0.25
+            and semantic_similarity(question, e.text) < 0.45
+        )
+
+    ]
 
     if low_conf_chunks:
         challenges.append(
@@ -168,10 +177,6 @@ def run_critic(question: str, answer: str, evidence: list[EvidenceChunk]) -> lis
         best_supporting_chunk = None
 
         for e in evidence:
-
-            # Ignore weak retrieval results.
-            if e.fused_score < 0.25:
-                continue
 
             nli = check_entailment(
                 claim,
@@ -273,22 +278,13 @@ def run_fact_checker(answer: str, evidence: list[EvidenceChunk]) -> list[FactChe
 
         for e in evidence:
 
-            result = check_entailment(
-                claim,
-                e.text,
-            )
+            result = check_entailment(claim, e.text)
 
-            relevance = result.get("relevance_score", 0.0)
+            relevance = result.get("relevance_score", 0.0,)
 
-            entailment = result["scores"].get(
-                "entailment",
-                0.0,
-            )
+            entailment = result["scores"].get("entailment", 0.0,)
 
-            contradiction = result["scores"].get(
-                "contradiction",
-                0.0,
-            )
+            contradiction = result["scores"].get("contradiction", 0.0,)
 
             print(
                 f"  {e.chunk_id} | "
@@ -297,8 +293,17 @@ def run_fact_checker(answer: str, evidence: list[EvidenceChunk]) -> list[FactChe
                 f"contradiction={contradiction:.3f}"
             )
 
-            # Ignore semantically unrelated evidence.
-            if relevance < 0.20:
+            # --------------------------------------------------
+            # Relevance tiers
+            #
+            # Strongly relevant evidence can support OR
+            # contradict a claim.
+            #
+            # Weakly related evidence must NOT be allowed
+            # to refute a claim.
+            # --------------------------------------------------
+
+            if relevance < 0.45:
                 continue
 
             if entailment > best_entailment:
@@ -365,7 +370,71 @@ def run_fact_checker(answer: str, evidence: list[EvidenceChunk]) -> list[FactChe
 
     return results
 
-def run_consensus(challenges: list[Challenge], fact_checks: list[FactCheckResult], evidence: list[EvidenceChunk]) -> tuple[float, str, str]:
+def check_answer_relevance(question: str, answer: str) -> tuple[bool, float, str]:
+    """
+    Verify that the generated answer actually addresses
+    the user's question.
+
+    This is deliberately separate from claim-evidence
+    verification.
+
+    An answer can contain true claims while still failing
+    to answer the question.
+    """
+
+    if not question.strip():
+        return (
+            False,
+            0.0,
+            "Question is empty.",
+        )
+
+    if not answer.strip():
+        return (
+            False,
+            0.0,
+            "Generated answer is empty.",
+        )
+
+    if answer.lower().startswith(
+        "insufficient relevant evidence was retrieved"
+    ):
+        return (
+            False,
+            0.0,
+            "Generator reported insufficient relevant evidence.",
+        )
+
+    score = semantic_similarity(question, answer)
+
+    aligned = score >= 0.45
+
+# NLI here is NOT a truth check.
+# It is an additional signal for whether the answer
+# is logically compatible with the question/evidence.
+
+    if aligned:
+        rationale = (
+            "The generated answer is semantically related "
+            "to the submitted question."
+        )
+    else:
+        rationale = (
+            "The generated answer does not appear to address "
+            "the submitted question."
+        )
+
+    print("\n========== ANSWER RELEVANCE ==========")
+    print("QUESTION:", question)
+    print("ANSWER:", answer)
+    print("SEMANTIC SCORE:", round(score, 4))
+    print("ALIGNED:", aligned)
+    print("RATIONALE:", rationale)
+    print("======================================\n")
+
+    return aligned, score, rationale
+    
+def run_consensus(challenges: list[Challenge], fact_checks: list[FactCheckResult], evidence: list[EvidenceChunk], answer_aligned=True,) -> tuple[float, str, str]:
     """
     Deterministic, auditable scoring function — NOT left to the LLM's vibes.
     This matters for the demo: judges can see exactly why confidence dropped.
@@ -377,6 +446,13 @@ def run_consensus(challenges: list[Challenge], fact_checks: list[FactCheckResult
             0.0,
             "unverifiable",
             "No fact-check results were produced.",
+        )
+
+    if not answer_aligned:
+        return (
+            0.0,
+            "unverifiable",
+            "The generated answer does not adequately address the submitted question.",
         )
 
     contradicted = sum(
@@ -398,6 +474,15 @@ def run_consensus(challenges: list[Challenge], fact_checks: list[FactCheckResult
     )
 
     total = len(fact_checks)
+
+    material_unresolved_severity = sum(
+        c.severity
+        for c in challenges
+        if (
+            not c.resolved
+            and c.severity >= 0.75
+        )
+    )
 
     # -------------------------------------------------
     # HARD SAFETY RULE
@@ -458,14 +543,8 @@ def run_consensus(challenges: list[Challenge], fact_checks: list[FactCheckResult
             + diversity_bonus
         )
 
-        unresolved_severity = sum(
-            c.severity
-            for c in challenges
-            if not c.resolved
-        )
-
         score -= min(
-            unresolved_severity * 0.10,
+            material_unresolved_severity * 0.10,
             0.20,
         )
 
@@ -486,8 +565,72 @@ def run_consensus(challenges: list[Challenge], fact_checks: list[FactCheckResult
     rationale = (
         f"{supported} supported, "
         f"{contradicted} contradicted, "
-        f"{insufficient} insufficient-evidence "
-        f"claim(s)."
+        f"{insufficient} insufficient-evidence claim(s) "
+        f"Material unresolved severity: "
+        f"{material_unresolved_severity:.2f}."
     )
 
     return score, verdict, rationale
+
+def check_question_coverage(question: str, fact_checks) -> tuple[bool, float, str]:
+    """
+    Determine whether at least one strongly supported claim
+    actually addresses the user's question.
+
+    This is different from claim truth:
+        claim can be true
+        but irrelevant to the question.
+    """
+
+    from app.verification.relevance import semantic_similarity
+
+    supported_claims = [
+        fc.claim
+        for fc in fact_checks
+        if fc.supported
+    ]
+
+    if not supported_claims:
+        return (
+            False,
+            0.0,
+            "No supported claims are available to answer the question.",
+        )
+
+    best_score = 0.0
+    best_claim = None
+
+    for claim in supported_claims:
+
+        score = semantic_similarity(
+            question,
+            claim,
+        )
+
+        if score > best_score:
+            best_score = score
+            best_claim = claim
+
+    # Conservative threshold.
+    covered = best_score >= 0.65
+
+    if covered:
+        rationale = (
+            "At least one verified claim directly covers "
+            "the submitted question."
+        )
+    else:
+        rationale = (
+            "The generated answer contains supported claims, "
+            "but none strongly addresses the submitted question."
+        )
+
+    print("\n========== QUESTION COVERAGE ==========")
+    print("QUESTION:", question)
+    print("BEST SUPPORTED CLAIM:", best_claim)
+    print("BEST SCORE:", round(best_score, 4))
+    print("COVERED:", covered)
+    print("RATIONALE:", rationale)
+    print("=======================================\n")
+
+    return covered, best_score, rationale

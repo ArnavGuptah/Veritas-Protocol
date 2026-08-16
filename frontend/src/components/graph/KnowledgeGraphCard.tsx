@@ -1,25 +1,46 @@
 import GlassCard from "../common/GlassCard";
 
-export default function KnowledgeGraphCard(){
+interface Evidence {
+  chunk_id: string;
+  source: string;
+  text: string;
+  fused_score: number;
+}
 
-return(
+interface Props {
+  evidence: Evidence[];
+}
 
-<GlassCard>
+export default function KnowledgeGraphCard({
+  evidence,
+}: Props) {
+  return (
+    <GlassCard>
+      <h3 className="text-2xl font-semibold">
+        Evidence
+      </h3>
 
-<h3 className="text-2xl font-semibold">
+      <div className="mt-6 space-y-4">
+        {evidence.slice(0, 5).map((item) => (
+          <div
+            key={item.chunk_id}
+            className="rounded-xl border border-white/10 bg-white/[0.03] p-4"
+          >
+            <p className="text-sm text-cyan-300">
+              {item.source}
+            </p>
 
-Knowledge Graph
+            <p className="mt-2 text-sm leading-6 text-zinc-400">
+              {item.text}
+            </p>
 
-</h3>
-
-<div className="mt-8 h-320 rounded-xl bg-zinc-900 flex items-center justify-center">
-
-Graph Here
-
-</div>
-
-</GlassCard>
-
-)
-
+            <p className="mt-3 text-xs text-zinc-600">
+              {item.chunk_id} · relevance{" "}
+              {(item.fused_score * 100).toFixed(1)}%
+            </p>
+          </div>
+        ))}
+      </div>
+    </GlassCard>
+  );
 }
